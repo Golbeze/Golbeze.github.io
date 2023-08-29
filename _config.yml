@@ -20,11 +20,11 @@
 
 title: ln3's blog
 email: 1816154@gmail.com
-description: >- # this means to ignore newlines until "baseurl:"
+description: > # this means to ignore newlines until "baseurl:"
   binary noob
 baseurl: "" # the subpath of your site, e.g. /blog
 url: "" # the base hostname & protocol for your site, e.g. http://example.com
-twitter_username: golbeze
+twitter_username: NULL
 github_username:  golbeze
 
 # Build settings

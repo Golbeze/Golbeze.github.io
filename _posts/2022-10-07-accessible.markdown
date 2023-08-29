@@ -52,25 +52,25 @@ patch点位于ComputeDataFieldAccessInfo中
 
 找到该函数的源码
 
-![image-20230602161311034](imgs/image-20230602161311034.png)
+![image-20230602161311034](/imgs/image-20230602161311034.png)
 
 该函数返回了一个DataField或者DataConst，但是仅有一个kind不同
 
-![image-20230602161617639](imgs/image-20230602161617639.png)
+![image-20230602161617639](/imgs/image-20230602161617639.png)
 
 同时也注意到第一个push出现在details_representation为HeapObject的case
 
-![image-20230602161358730](imgs/image-20230602161358730.png)
+![image-20230602161358730](/imgs/image-20230602161358730.png)
 
 向上查看details_representation指代的对象是谁
 
-![image-20230602161733603](imgs/image-20230602161733603.png)
+![image-20230602161733603](/imgs/image-20230602161733603.png)
 
 从details获取details_representation，details为map的DescriptorArray中的某一项属性记录的detail
 
 receiver_map为被查找对象的map，向上寻找map变量的来源
 
-![image-20230603200121221](imgs/image-20230603200121221.png)
+![image-20230603200121221](/imgs/image-20230603200121221.png)
 
 经过一些调试会发现此时的receiver_map与map均为被访问对象的map
 
@@ -78,35 +78,35 @@ receiver_map为被查找对象的map，向上寻找map变量的来源
 
 分析一下被去掉的代码的作用
 
-![image-20230603201225324](imgs/image-20230603201225324.png)
+![image-20230603201225324](/imgs/image-20230603201225324.png)
 
-![image-20230603201236889](imgs/image-20230603201236889.png)
+![image-20230603201236889](/imgs/image-20230603201236889.png)
 
 函数产生了一个CompilationDependency一个抽象基类指针
 
 CompilationDependency派生出很多Dependency
 
-![image-20230603201449118](imgs/image-20230603201449118.png)
+![image-20230603201449118](/imgs/image-20230603201449118.png)
 
-![image-20230603201523083](imgs/image-20230603201523083.png)
+![image-20230603201523083](/imgs/image-20230603201523083.png)
 
 都实现了Install函数，对code安装依赖
 
 根据对jit编译的了解，可以知道这些dependency是用来标明jit代码的依赖，当依赖不满足时及时地将代码deoptimize回bytecode解释器执行
 
-![image-20230603201853383](imgs/image-20230603201853383.png)
+![image-20230603201853383](/imgs/image-20230603201853383.png)
 
 在建立依赖的过程中，首先从拥有属性的map中调用FindFieldOwner
 
 需要理解一下这个fieldowner具体是指谁的map
 
-![image-20230606144603524](imgs/image-20230606144603524.png)
+![image-20230606144603524](/imgs/image-20230606144603524.png)
 
 实现中有两种实现，在jsheapbroker的模式为disable时调用map的FindFieldOwner方法
 
 或者是从mapref类所引用的map的instance_descriptors中找到对应索引的PropertyDescriptor
 
-![image-20230606144808193](imgs/image-20230606144808193.png)
+![image-20230606144808193](/imgs/image-20230606144808193.png)
 
 里面只有一个字段看起来是与map相关的，即field_owner
 
@@ -193,7 +193,7 @@ pwndbg> job 0x1b89284df859
 
 看似此时可以得到FindFieldOwner返回的应该是字段的map的结论，但是调试过后发现并非如此
 
-![image-20230606153859300](imgs/image-20230606153859300.png)
+![image-20230606153859300](/imgs/image-20230606153859300.png)
 
 分析map的FindFieldOwner函数，理论上该函数应当与mapref中的函数返回相同结果
 
@@ -245,29 +245,29 @@ pwndbg> job 0x0e2008c0a619
 
 而关于之前DescriptorArray中的map的来源，从chromium code search里DescriptorArray的注释中提到结构中的value可能会有一个map的weak reference，但是并没有解释其作用与具体指向
 
-![image-20230606160112227](imgs/image-20230606160112227.png)
+![image-20230606160112227](/imgs/image-20230606160112227.png)
 
 我们可以以此推测jsheapbroker实际上会对js对象的一些数据做cache，将对象的字段的owner记录在PropertyDescriptor结构中，这样就省去了每次遍历back pointer的开销
 
 查找一下引用会发现在SerializeOwnDescriptor中，存在对PropertyDescriptor的创建
 
-![image-20230606160605434](imgs/image-20230606160605434.png)
+![image-20230606160605434](/imgs/image-20230606160605434.png)
 
 简要分析可以发现该函数透过jsheapbroker更新了map的instance_descriptor中对应属性的PropertyDescriptor信息，验证了我们刚才的推测
 
-![image-20230603201853383](imgs/image-20230603201853383.png)
+![image-20230603201853383](/imgs/image-20230603201853383.png)
 
 回到函数，可以确认此时owner为拥有此属性的对象的map
 
-![image-20230606163637241](imgs/image-20230606163637241.png)
+![image-20230606163637241](/imgs/image-20230606163637241.png)
 
-![image-20230606163651195](imgs/image-20230606163651195.png)
+![image-20230606163651195](/imgs/image-20230606163651195.png)
 
 InstallDependency的逻辑较为简单，更新将code插入map的dependent code字段数组中
 
 我们看到PropertyAccessBuilder的BuildCheckMaps函数的逻辑
 
-![image-20230606162757037](imgs/image-20230606162757037.png)
+![image-20230606162757037](/imgs/image-20230606162757037.png)
 
 可以看到这里有两种方式，第一种判断了receiver的map是否stable，如果stable，且根据access_info得到的receiver_maps中确实有这个map，则添加一个StableMap的依赖
 
@@ -277,11 +277,11 @@ InstallDependency的逻辑较为简单，更新将code插入map的dependent code
 
 map的dependent code就是为了deoptimize而设，当map变为unstable时，即可根据该字段来遍历所有依赖当前stable map的optimized code
 
-![image-20230606164253443](imgs/image-20230606164253443.png)
+![image-20230606164253443](/imgs/image-20230606164253443.png)
 
 所有依赖在Commit函数中被Install，时机为编译流水线的结尾
 
-![image-20230606185336157](imgs/image-20230606185336157.png)
+![image-20230606185336157](/imgs/image-20230606185336157.png)
 
 此时审视我们最开始得到的patch
 
@@ -316,21 +316,21 @@ FieldType根据一些代码可以知道实际就是指代字段的map
 
 在chromium code search中查找一下patch函数引用
 
-![image-20230602155652981](imgs/image-20230602155652981.png)
+![image-20230602155652981](/imgs/image-20230602155652981.png)
 
 只出现在ComputePropertyAccessInfo中，继续往下找
 
-![image-20230602155733376](imgs/image-20230602155733376.png)
+![image-20230602155733376](/imgs/image-20230602155733376.png)
 
 有两个引用
 
 分别查看一下
 
-![image-20230602155811751](imgs/image-20230602155811751.png)
+![image-20230602155811751](/imgs/image-20230602155811751.png)
 
 
 
-![image-20230602155915506](imgs/image-20230602155915506.png)
+![image-20230602155915506](/imgs/image-20230602155915506.png)
 
 GetPropertyAccessInfo用的更加频繁一些，同时注意到有一个ReduceNamedAccess，这表明turbofan在优化具名属性访问如o.xxx时会引用到这里的结果
 
@@ -352,7 +352,7 @@ console.log(opt(obj))
 
 观察生成的字节码
 
-![image-20230606194647224](imgs/image-20230606194647224.png)
+![image-20230606194647224](/imgs/image-20230606194647224.png)
 
 opt函数产生了两次属性访问
 
@@ -364,9 +364,9 @@ gdb --args ./d8 --allow-natives-syntax --trace-opt-verbose --trace-deopt ./poc.j
 
 通过turbolizer观察编译过程中的节点变化
 
-![image-20230606194908037](imgs/image-20230606194908037.png)
+![image-20230606194908037](/imgs/image-20230606194908037.png)
 
-![image-20230606194304500](imgs/image-20230606194304500.png)
+![image-20230606194304500](/imgs/image-20230606194304500.png)
 
 发现产生了两个checkmaps，与我们预期的通过depend code进行deoptimize有些不符
 
@@ -376,19 +376,19 @@ gdb --args ./d8 --allow-natives-syntax --trace-opt-verbose --trace-deopt ./poc.j
 
 分析checkmaps的出处
 
-![image-20230602160843157](imgs/image-20230602160843157.png)
+![image-20230602160843157](/imgs/image-20230602160843157.png)
 
-![image-20230606194447428](imgs/image-20230606194447428.png)
+![image-20230606194447428](/imgs/image-20230606194447428.png)
 
 当receiver转换为string或number失败时调用BuildCheckMaps
 
-![image-20230606194513633](imgs/image-20230606194513633.png)
+![image-20230606194513633](/imgs/image-20230606194513633.png)
 
 调试发现m.HasValue()对于两次调用均不成立
 
-![image-20230606195204624](imgs/image-20230606195204624.png)
+![image-20230606195204624](/imgs/image-20230606195204624.png)
 
-![image-20230606195247896](imgs/image-20230606195247896.png)
+![image-20230606195247896](/imgs/image-20230606195247896.png)
 
 发现此函数需要node的opcode为HeapConstant，难以满足，所以落入checkmaps的path
 
@@ -396,11 +396,11 @@ gdb --args ./d8 --allow-natives-syntax --trace-opt-verbose --trace-deopt ./poc.j
 
 通过调试也发现dependent code集中在o.x而非o
 
-![image-20230606203223136](imgs/image-20230606203223136.png)
+![image-20230606203223136](/imgs/image-20230606203223136.png)
 
 分析loadelimination中发生的事
 
-![image-20230606203403032](imgs/image-20230606203403032.png)
+![image-20230606203403032](/imgs/image-20230606203403032.png)
 
 调用ReduceCheckMaps，第一次调用时，node state中没有记录map，通过该checkmaps后更新check的map范围到node state中
 
@@ -457,7 +457,7 @@ console.log(opt(obj))
 
 这个逻辑实现在Map::GeneralizeField中
 
-![image-20230613214250869](imgs/image-20230613214250869.png)
+![image-20230613214250869](/imgs/image-20230613214250869.png)
 
 
 

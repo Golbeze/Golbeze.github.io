@@ -14,7 +14,7 @@ another thing to figure out is that the newline, what is the difference between 
 最后来个中文试试看
 
 don't forget code blocks
-```javascript
+```js
 console.log("this is a javasccccript!");
 ```
 

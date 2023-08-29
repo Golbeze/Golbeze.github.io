@@ -1,11 +1,9 @@
 ---
 layout: post
 title:  "2019 强网杯 accessible分析"
-date:   2023-08-29 07:20:22 +0800
+date:   2022-10-03 07:20:22 +0800
 categories: v8
 ---
-# 2019 qwb accessible
-
 ## 分析patch
 
 ```diff

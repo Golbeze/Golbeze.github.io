@@ -22,7 +22,7 @@ print_hi('Tom')
 #=> prints 'Hi, Tom' to STDOUT.
 {% endhighlight %}
 
-```C
+```c
 #include <stdio.h>
 int main(){
   printf("Hello World");

@@ -28,9 +28,11 @@ twitter_username: NULL
 github_username:  golbeze
 
 # Build settings
-theme: minima
-plugins:
-  - jekyll-feed
+markdown: redcarpet
+redcarpet:
+    extensions: [ "hard_wrap","autolink", "tables", "strikethrough", "superscript", "with_toc_data", "highlight", "prettify","no_intra_emphasis"]
+
+theme: jekyll-theme-hacker
 
 # Exclude from processing.
 # The following items will not be processed, by default.

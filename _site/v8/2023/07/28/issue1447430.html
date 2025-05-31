@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>v8 issue 1447430分析 | ln3’s blog</title>
+<meta name="generator" content="Jekyll v3.10.0" />
+<meta property="og:title" content="v8 issue 1447430分析" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="patch分析" />
+<meta property="og:description" content="patch分析" />
+<link rel="canonical" href="http://localhost:4000/v8/2023/07/28/issue1447430.html" />
+<meta property="og:url" content="http://localhost:4000/v8/2023/07/28/issue1447430.html" />
+<meta property="og:site_name" content="ln3’s blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2023-07-28T15:20:22+08:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="v8 issue 1447430分析" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","dateModified":"2023-07-28T15:20:22+08:00","datePublished":"2023-07-28T15:20:22+08:00","description":"patch分析","headline":"v8 issue 1447430分析","mainEntityOfPage":{"@type":"WebPage","@id":"http://localhost:4000/v8/2023/07/28/issue1447430.html"},"url":"http://localhost:4000/v8/2023/07/28/issue1447430.html"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="stylesheet" href="/assets/main.css"><link type="application/atom+xml" rel="alternate" href="http://localhost:4000/feed.xml" title="ln3&apos;s blog" /></head>
+<body><header class="site-header" role="banner">
+
+  <div class="wrapper"><a class="site-title" rel="author" href="/">ln3&#39;s blog</a><nav class="site-nav">
+        <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+        <label for="nav-trigger">
+          <span class="menu-icon">
+            <svg viewBox="0 0 18 15" width="18px" height="15px">
+              <path d="M18,1.484c0,0.82-0.665,1.484-1.484,1.484H1.484C0.665,2.969,0,2.304,0,1.484l0,0C0,0.665,0.665,0,1.484,0 h15.032C17.335,0,18,0.665,18,1.484L18,1.484z M18,7.516C18,8.335,17.335,9,16.516,9H1.484C0.665,9,0,8.335,0,7.516l0,0 c0-0.82,0.665-1.484,1.484-1.484h15.032C17.335,6.031,18,6.696,18,7.516L18,7.516z M18,13.516C18,14.335,17.335,15,16.516,15H1.484 C0.665,15,0,14.335,0,13.516l0,0c0-0.82,0.665-1.483,1.484-1.483h15.032C17.335,12.031,18,12.695,18,13.516L18,13.516z"/>
+            </svg>
+          </span>
+        </label>
+
+        <div class="trigger"><a class="page-link" href="/about/">About</a></div>
+      </nav></div>
+</header>
+<main class="page-content" aria-label="Content">
+      <div class="wrapper">
+        <article class="post h-entry" itemscope itemtype="http://schema.org/BlogPosting">
+
+  <header class="post-header">
+    <h1 class="post-title p-name" itemprop="name headline">v8 issue 1447430分析</h1>
+    <p class="post-meta">
+      <time class="dt-published" datetime="2023-07-28T15:20:22+08:00" itemprop="datePublished">Jul 28, 2023
+      </time></p>
+  </header>
+
+  <div class="post-content e-content" itemprop="articleBody">
+    <h2 id="patch分析">patch分析</h2>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code>git fetch origin refs/tags/11.4.183.17 <span class="c"># release in 5.26</span>
+git fetch origin refs/tags/11.4.183.19 <span class="c"># patched version</span>
+git checkout 114.1.183.19
+git diff 114.1.183.17
+</code></pre></div></div>
+
+<p>patch主要分为两部分，一部分在patch ic的代码，另一部分主要在patch关于LookupIterator的代码</p>
+
+<p>经过一些调查可以发现主要是LookupIterator的代码较为相关</p>
+
+<div class="language-diff highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="gh">diff --git a/src/objects/lookup-inl.h b/src/objects/lookup-inl.h
+index 00c95e013c..8b5717021b 100644
+</span><span class="gd">--- a/src/objects/lookup-inl.h
+</span><span class="gi">+++ b/src/objects/lookup-inl.h
+</span><span class="p">@@ -190,7 +190,7 @@</span> Handle&lt;Name&gt; PropertyKey::GetName(Isolate* isolate) {
+ }
+ 
+ Handle&lt;Name&gt; LookupIterator::name() const {
+<span class="gd">-  DCHECK(!IsElement(*holder_));
+</span><span class="gi">+  DCHECK_IMPLIES(!holder_.is_null(), !IsElement(*holder_));
+</span>   return name_;
+ }
+ 
+<span class="p">@@ -285,6 +285,7 @@</span> void LookupIterator::UpdateProtector() {
+ }
+ 
+ InternalIndex LookupIterator::descriptor_number() const {
+<span class="gi">+  DCHECK(!holder_.is_null());
+</span>   DCHECK(!IsElement(*holder_));
+   DCHECK(has_property_);
+   DCHECK(holder_-&gt;HasFastProperties(isolate_));
+<span class="p">@@ -292,6 +293,7 @@</span> InternalIndex LookupIterator::descriptor_number() const {
+ }
+ 
+ InternalIndex LookupIterator::dictionary_entry() const {
+<span class="gi">+  DCHECK(!holder_.is_null());
+</span>   DCHECK(!IsElement(*holder_));
+   DCHECK(has_property_);
+   DCHECK(!holder_-&gt;HasFastProperties(isolate_));
+<span class="p">@@ -306,13 +308,14 @@</span> LookupIterator::Configuration LookupIterator::ComputeConfiguration(
+ }
+ 
+ // static
+<span class="gd">-Handle&lt;JSReceiver&gt; LookupIterator::GetRoot(Isolate* isolate,
+-                                           Handle&lt;Object&gt; lookup_start_object,
+-                                           size_t index) {
+</span><span class="gi">+MaybeHandle&lt;JSReceiver&gt; LookupIterator::GetRoot(
++    Isolate* isolate, Handle&lt;Object&gt; lookup_start_object, size_t index,
++    Configuration configuration) {
+</span>   if (lookup_start_object-&gt;IsJSReceiver(isolate)) {
+     return Handle&lt;JSReceiver&gt;::cast(lookup_start_object);
+   }
+<span class="gd">-  return GetRootForNonJSReceiver(isolate, lookup_start_object, index);
+</span><span class="gi">+  return GetRootForNonJSReceiver(isolate, lookup_start_object, index,
++                                 configuration);
+</span> }
+ 
+ template &lt;class T&gt;
+<span class="gh">diff --git a/src/objects/lookup.cc b/src/objects/lookup.cc
+index 8fceef1ad1..78c509b863 100644
+</span><span class="gd">--- a/src/objects/lookup.cc
+</span><span class="gi">+++ b/src/objects/lookup.cc
+</span><span class="p">@@ -42,27 +42,20 @@</span> PropertyKey::PropertyKey(Isolate* isolate, Handle&lt;Object&gt; key, bool* success) {
+   }
+ }
+ 
+<span class="gd">-LookupIterator::LookupIterator(Isolate* isolate, Handle&lt;Object&gt; receiver,
+-                               Handle&lt;Name&gt; name, Handle&lt;Map&gt; transition_map,
+-                               PropertyDetails details, bool has_property)
+-    : configuration_(DEFAULT),
+-      state_(TRANSITION),
+-      has_property_(has_property),
+-      interceptor_state_(InterceptorState::kUninitialized),
+-      property_details_(details),
+-      isolate_(isolate),
+-      name_(name),
+-      transition_(transition_map),
+-      receiver_(receiver),
+-      lookup_start_object_(receiver),
+-      index_(kInvalidIndex) {
+-  holder_ = GetRoot(isolate, lookup_start_object_);
+-}
+-
+</span> template &lt;bool is_element&gt;
+ void LookupIterator::Start() {
+   // GetRoot might allocate if lookup_start_object_ is a string.
+<span class="gd">-  holder_ = GetRoot(isolate_, lookup_start_object_, index_);
+</span><span class="gi">+  MaybeHandle&lt;JSReceiver&gt; maybe_holder =
++      GetRoot(isolate_, lookup_start_object_, index_, configuration_);
++  if (!maybe_holder.ToHandle(&amp;holder_)) {
++    // This is an attempt to perform an own property lookup on a non-JSReceiver
++    // that doesn't have any properties.
++    DCHECK(!lookup_start_object_-&gt;IsJSReceiver());
++    DCHECK(!check_prototype_chain());
++    has_property_ = false;
++    state_ = NOT_FOUND;
++    return;
++  }
+</span> 
+   {
+     DisallowGarbageCollection no_gc;
+<span class="p">@@ -135,19 +128,27 @@</span> template void LookupIterator::RestartInternal&lt;true&gt;(InterceptorState);
+ template void LookupIterator::RestartInternal&lt;false&gt;(InterceptorState);
+ 
+ // static
+<span class="gd">-Handle&lt;JSReceiver&gt; LookupIterator::GetRootForNonJSReceiver(
+-    Isolate* isolate, Handle&lt;Object&gt; lookup_start_object, size_t index) {
+-  // Strings are the only objects with properties (only elements) directly on
+-  // the wrapper. Hence we can skip generating the wrapper for all other cases.
+-  if (lookup_start_object-&gt;IsString(isolate) &amp;&amp;
+-      index &lt;
+-          static_cast&lt;size_t&gt;(String::cast(*lookup_start_object).length())) {
+-    // TODO(verwaest): Speed this up. Perhaps use a cached wrapper on the native
+-    // context, ensuring that we don't leak it into JS?
+-    Handle&lt;JSFunction&gt; constructor = isolate-&gt;string_function();
+-    Handle&lt;JSObject&gt; result = isolate-&gt;factory()-&gt;NewJSObject(constructor);
+-    Handle&lt;JSPrimitiveWrapper&gt;::cast(result)-&gt;set_value(*lookup_start_object);
+-    return result;
+</span><span class="gi">+MaybeHandle&lt;JSReceiver&gt; LookupIterator::GetRootForNonJSReceiver(
++    Isolate* isolate, Handle&lt;Object&gt; lookup_start_object, size_t index,
++    Configuration configuration) {
++  // Strings are the only non-JSReceiver objects with properties (only elements
++  // and 'length') directly on the wrapper. Hence we can skip generating
++  // the wrapper for all other cases.
++  bool own_property_lookup = (configuration &amp; kPrototypeChain) == 0;
++  if (lookup_start_object-&gt;IsString(isolate)) {
++    if (own_property_lookup ||
++        index &lt;
++            static_cast&lt;size_t&gt;(String::cast(*lookup_start_object).length())) {
++      // TODO(verwaest): Speed this up. Perhaps use a cached wrapper on the
++      // native context, ensuring that we don't leak it into JS?
++      Handle&lt;JSFunction&gt; constructor = isolate-&gt;string_function();
++      Handle&lt;JSObject&gt; result = isolate-&gt;factory()-&gt;NewJSObject(constructor);
++      Handle&lt;JSPrimitiveWrapper&gt;::cast(result)-&gt;set_value(*lookup_start_object);
++      return result;
++    }
++  } else if (own_property_lookup) {
++    // Signal that the lookup will not find anything.
++    return {};
+</span>   }
+   Handle&lt;HeapObject&gt; root(
+       lookup_start_object-&gt;GetPrototypeChainRootMap(isolate).prototype(isolate),
+<span class="p">@@ -918,6 +919,7 @@</span> Handle&lt;Object&gt; LookupIterator::FetchValue(
+ }
+ 
+ bool LookupIterator::CanStayConst(Object value) const {
+<span class="gi">+  DCHECK(!holder_.is_null());
+</span>   DCHECK(!IsElement(*holder_));
+   DCHECK(holder_-&gt;HasFastProperties(isolate_));
+   DCHECK_EQ(PropertyLocation::kField, property_details_.location());
+<span class="p">@@ -951,6 +953,7 @@</span> bool LookupIterator::CanStayConst(Object value) const {
+ }
+ 
+ bool LookupIterator::DictCanStayConst(Object value) const {
+<span class="gi">+  DCHECK(!holder_.is_null());
+</span>   DCHECK(!IsElement(*holder_));
+   DCHECK(!holder_-&gt;HasFastProperties(isolate_));
+   DCHECK(!holder_-&gt;IsJSGlobalObject());
+<span class="p">@@ -997,6 +1000,7 @@</span> int LookupIterator::GetAccessorIndex() const {
+ 
+ FieldIndex LookupIterator::GetFieldIndex() const {
+   DCHECK(has_property_);
+<span class="gi">+  DCHECK(!holder_.is_null());
+</span>   DCHECK(holder_-&gt;HasFastProperties(isolate_));
+   DCHECK_EQ(PropertyLocation::kField, property_details_.location());
+   DCHECK(!IsElement(*holder_));
+<span class="p">@@ -1004,6 +1008,7 @@</span> FieldIndex LookupIterator::GetFieldIndex() const {
+ }
+ 
+ Handle&lt;PropertyCell&gt; LookupIterator::GetPropertyCell() const {
+<span class="gi">+  DCHECK(!holder_.is_null());
+</span>   DCHECK(!IsElement(*holder_));
+   Handle&lt;JSGlobalObject&gt; holder = GetHolder&lt;JSGlobalObject&gt;();
+   return handle(holder-&gt;global_dictionary(isolate_, kAcquireLoad)
+<span class="gh">diff --git a/src/objects/lookup.h b/src/objects/lookup.h
+index 06ed50e97b..5d2d926b7e 100644
+</span><span class="gd">--- a/src/objects/lookup.h
+</span><span class="gi">+++ b/src/objects/lookup.h
+</span><span class="p">@@ -222,11 +222,6 @@</span> class V8_EXPORT_PRIVATE LookupIterator final {
+                         Handle&lt;Object&gt; lookup_start_object,
+                         Configuration configuration);
+ 
+<span class="gd">-  // For |ForTransitionHandler|.
+-  LookupIterator(Isolate* isolate, Handle&lt;Object&gt; receiver, Handle&lt;Name&gt; name,
+-                 Handle&lt;Map&gt; transition_map, PropertyDetails details,
+-                 bool has_property);
+-
+</span>   static void InternalUpdateProtector(Isolate* isolate, Handle&lt;Object&gt; receiver,
+                                       Handle&lt;Name&gt; name);
+ 
+<span class="p">@@ -286,12 +281,12 @@</span> class V8_EXPORT_PRIVATE LookupIterator final {
+                                                    Configuration configuration,
+                                                    Handle&lt;Name&gt; name);
+ 
+<span class="gd">-  static Handle&lt;JSReceiver&gt; GetRootForNonJSReceiver(
+-      Isolate* isolate, Handle&lt;Object&gt; lookup_start_object,
+-      size_t index = kInvalidIndex);
+-  static inline Handle&lt;JSReceiver&gt; GetRoot(Isolate* isolate,
+-                                           Handle&lt;Object&gt; lookup_start_object,
+-                                           size_t index = kInvalidIndex);
+</span><span class="gi">+  static MaybeHandle&lt;JSReceiver&gt; GetRootForNonJSReceiver(
++      Isolate* isolate, Handle&lt;Object&gt; lookup_start_object, size_t index,
++      Configuration configuration);
++  static inline MaybeHandle&lt;JSReceiver&gt; GetRoot(
++      Isolate* isolate, Handle&lt;Object&gt; lookup_start_object, size_t index,
++      Configuration configuration);
+</span> 
+   State NotFound(JSReceiver const holder) const;
+</code></pre></div></div>
+
+<p>patch的核心修改在于为LookupIterator的GetRoot方法中的nonReceiver path添加了一个early return</p>
+
+<div class="language-diff highlighter-rouge"><div class="highlight"><pre class="highlight"><code> // static
+<span class="gd">-Handle&lt;JSReceiver&gt; LookupIterator::GetRootForNonJSReceiver(
+-    Isolate* isolate, Handle&lt;Object&gt; lookup_start_object, size_t index) {
+-  // Strings are the only objects with properties (only elements) directly on
+-  // the wrapper. Hence we can skip generating the wrapper for all other cases.
+-  if (lookup_start_object-&gt;IsString(isolate) &amp;&amp;
+-      index &lt;
+-          static_cast&lt;size_t&gt;(String::cast(*lookup_start_object).length())) {
+-    // TODO(verwaest): Speed this up. Perhaps use a cached wrapper on the native
+-    // context, ensuring that we don't leak it into JS?
+-    Handle&lt;JSFunction&gt; constructor = isolate-&gt;string_function();
+-    Handle&lt;JSObject&gt; result = isolate-&gt;factory()-&gt;NewJSObject(constructor);
+-    Handle&lt;JSPrimitiveWrapper&gt;::cast(result)-&gt;set_value(*lookup_start_object);
+-    return result;
+</span><span class="gi">+MaybeHandle&lt;JSReceiver&gt; LookupIterator::GetRootForNonJSReceiver(
++    Isolate* isolate, Handle&lt;Object&gt; lookup_start_object, size_t index,
++    Configuration configuration) {
++  // Strings are the only non-JSReceiver objects with properties (only elements
++  // and 'length') directly on the wrapper. Hence we can skip generating
++  // the wrapper for all other cases.
++  bool own_property_lookup = (configuration &amp; kPrototypeChain) == 0;
++  if (lookup_start_object-&gt;IsString(isolate)) {
++    if (own_property_lookup ||
++        index &lt;
++            static_cast&lt;size_t&gt;(String::cast(*lookup_start_object).length())) {
++      // TODO(verwaest): Speed this up. Perhaps use a cached wrapper on the
++      // native context, ensuring that we don't leak it into JS?
++      Handle&lt;JSFunction&gt; constructor = isolate-&gt;string_function();
++      Handle&lt;JSObject&gt; result = isolate-&gt;factory()-&gt;NewJSObject(constructor);
++      Handle&lt;JSPrimitiveWrapper&gt;::cast(result)-&gt;set_value(*lookup_start_object);
++      return result;
++    }
++  } else if (own_property_lookup) {
++    // Signal that the lookup will not find anything.
++    return {};
+</span></code></pre></div></div>
+
+<p>修改了函数原型，新增了一个变量own_property_lookup和参数configuration，</p>
+
+<p>configuration为属性查找过程的配置</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">enum</span> <span class="n">Configuration</span> <span class="p">{</span>
+    <span class="c1">// Configuration bits.</span>
+    <span class="n">kInterceptor</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="mi">0</span><span class="p">,</span>
+    <span class="n">kPrototypeChain</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="mi">1</span><span class="p">,</span>
+
+    <span class="c1">// Convenience combinations of bits.</span>
+    <span class="n">OWN_SKIP_INTERCEPTOR</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span>
+    <span class="n">OWN</span> <span class="o">=</span> <span class="n">kInterceptor</span><span class="p">,</span>
+    <span class="n">PROTOTYPE_CHAIN_SKIP_INTERCEPTOR</span> <span class="o">=</span> <span class="n">kPrototypeChain</span><span class="p">,</span>
+    <span class="n">PROTOTYPE_CHAIN</span> <span class="o">=</span> <span class="n">kPrototypeChain</span> <span class="o">|</span> <span class="n">kInterceptor</span><span class="p">,</span>
+    <span class="n">DEFAULT</span> <span class="o">=</span> <span class="n">PROTOTYPE_CHAIN</span>
+  <span class="p">};</span>
+</code></pre></div></div>
+
+<p>主要用于指示查找过程中是否考虑js对象原型链与interceptor，这里interceptor应指如getter，proxy等控制属性访问的函数</p>
+
+<p>添加的own_property_lookup指示当前是否只搜索本对象内的属性，当为真且key并非String的时候，会直接return一个空值，不再进行GetRootForNonJSReceiver下方的原型链搜索</p>
+
+<p>修改的其他代码也主要是为了这段修改进行适配，如调用GetRoot的Start()</p>
+
+<div class="language-diff highlighter-rouge"><div class="highlight"><pre class="highlight"><code> template &lt;bool is_element&gt;
+ void LookupIterator::Start() {
+   // GetRoot might allocate if lookup_start_object_ is a string.
+<span class="gd">-  holder_ = GetRoot(isolate_, lookup_start_object_, index_);
+</span><span class="gi">+  MaybeHandle&lt;JSReceiver&gt; maybe_holder =
++      GetRoot(isolate_, lookup_start_object_, index_, configuration_);
++  if (!maybe_holder.ToHandle(&amp;holder_)) {
++    // This is an attempt to perform an own property lookup on a non-JSReceiver
++    // that doesn't have any properties.
++    DCHECK(!lookup_start_object_-&gt;IsJSReceiver());
++    DCHECK(!check_prototype_chain());
++    has_property_ = false;
++    state_ = NOT_FOUND;
++    return;
++  }
+</span></code></pre></div></div>
+
+<p>为了兼容返回的空值，进行了一些额外判断，同时也写上了重要的注释，表明此修改是为了应对non-JSReceiver上的own property查找</p>
+
+<p>所以可以得出，原代码在遇到一个没有任何属性的<code class="language-plaintext highlighter-rouge">non-JSReceiver</code>时，即使在标注了不应该进行原型链搜索的情况下，依然会执行搜索的代码</p>
+
+<p>我们分析<code class="language-plaintext highlighter-rouge">configuration</code>的来源来确定什么时候不需要原型链搜索</p>
+
+<p>可以发现主要是在<code class="language-plaintext highlighter-rouge">LookupIterator</code>的构造函数中所赋值</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kr">inline</span> <span class="nf">LookupIterator</span><span class="p">(</span><span class="n">Isolate</span><span class="o">*</span> <span class="n">isolate</span><span class="p">,</span> <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Object</span><span class="o">&gt;</span> <span class="n">receiver</span><span class="p">,</span>
+                        <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Name</span><span class="o">&gt;</span> <span class="n">name</span><span class="p">,</span> <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Object</span><span class="o">&gt;</span> <span class="n">lookup_start_object</span><span class="p">,</span>
+                        <span class="n">Configuration</span> <span class="n">configuration</span> <span class="o">=</span> <span class="n">DEFAULT</span><span class="p">);</span>  <span class="c1">// 默认配置为DEFALUT-&gt; kPrototypeChain | kInterceptor</span>
+<span class="p">...</span>
+<span class="p">...</span>
+<span class="n">LookupIterator</span><span class="o">::</span><span class="n">LookupIterator</span><span class="p">(</span><span class="n">Isolate</span><span class="o">*</span> <span class="n">isolate</span><span class="p">,</span> <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Object</span><span class="o">&gt;</span> <span class="n">receiver</span><span class="p">,</span>
+                               <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Name</span><span class="o">&gt;</span> <span class="n">name</span><span class="p">,</span>
+                               <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Object</span><span class="o">&gt;</span> <span class="n">lookup_start_object</span><span class="p">,</span>
+                               <span class="n">Configuration</span> <span class="n">configuration</span><span class="p">)</span>
+    <span class="o">:</span> <span class="n">LookupIterator</span><span class="p">(</span><span class="n">isolate</span><span class="p">,</span> <span class="n">receiver</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">kInvalidIndex</span><span class="p">,</span>   <span class="c1">// 调用另一个构造函数</span>
+                     <span class="n">lookup_start_object</span><span class="p">,</span> <span class="n">configuration</span><span class="p">)</span> <span class="p">{}</span>
+<span class="p">...</span>
+<span class="p">...</span>
+<span class="c1">// This private constructor is the central bottleneck that all the other</span>
+<span class="c1">// constructors use.</span>
+<span class="n">LookupIterator</span><span class="o">::</span><span class="n">LookupIterator</span><span class="p">(</span><span class="n">Isolate</span><span class="o">*</span> <span class="n">isolate</span><span class="p">,</span> <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Object</span><span class="o">&gt;</span> <span class="n">receiver</span><span class="p">,</span>
+                               <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Name</span><span class="o">&gt;</span> <span class="n">name</span><span class="p">,</span> <span class="kt">size_t</span> <span class="n">index</span><span class="p">,</span>
+                               <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Object</span><span class="o">&gt;</span> <span class="n">lookup_start_object</span><span class="p">,</span>
+                               <span class="n">Configuration</span> <span class="n">configuration</span><span class="p">)</span>
+    <span class="o">:</span> <span class="n">configuration_</span><span class="p">(</span><span class="n">ComputeConfiguration</span><span class="p">(</span><span class="n">isolate</span><span class="p">,</span> <span class="n">configuration</span><span class="p">,</span> <span class="n">name</span><span class="p">)),</span>  <span class="c1">// 调用ComputeConfiguration</span>
+      <span class="n">isolate_</span><span class="p">(</span><span class="n">isolate</span><span class="p">),</span>
+      <span class="n">name_</span><span class="p">(</span><span class="n">name</span><span class="p">),</span>
+      <span class="n">receiver_</span><span class="p">(</span><span class="n">receiver</span><span class="p">),</span>
+      <span class="n">lookup_start_object_</span><span class="p">(</span><span class="n">lookup_start_object</span><span class="p">),</span>
+      <span class="n">index_</span><span class="p">(</span><span class="n">index</span><span class="p">)</span> <span class="p">{</span>
+  <span class="k">if</span> <span class="p">(</span><span class="n">IsElement</span><span class="p">())</span> <span class="p">{</span>
+    <span class="c1">// If we're not looking at a TypedArray, we will need the key represented</span>
+    <span class="c1">// as an internalized string.</span>
+    <span class="p">...</span>
+    <span class="p">...</span>
+<span class="c1">// static</span>
+<span class="n">LookupIterator</span><span class="o">::</span><span class="n">Configuration</span> <span class="n">LookupIterator</span><span class="o">::</span><span class="n">ComputeConfiguration</span><span class="p">(</span>
+    <span class="n">Isolate</span><span class="o">*</span> <span class="n">isolate</span><span class="p">,</span> <span class="n">Configuration</span> <span class="n">configuration</span><span class="p">,</span> <span class="n">Handle</span><span class="o">&lt;</span><span class="n">Name</span><span class="o">&gt;</span> <span class="n">name</span><span class="p">)</span> <span class="p">{</span>
+  <span class="k">return</span> <span class="p">(</span><span class="o">!</span><span class="n">name</span><span class="p">.</span><span class="n">is_null</span><span class="p">()</span> <span class="o">&amp;&amp;</span> <span class="n">name</span><span class="o">-&gt;</span><span class="n">IsPrivate</span><span class="p">(</span><span class="n">isolate</span><span class="p">))</span> <span class="o">?</span> <span class="n">OWN_SKIP_INTERCEPTOR</span> <span class="c1">// 当前仅当Lookup的Name为Private时,</span>
+                                                       <span class="o">:</span> <span class="n">configuration</span><span class="p">;</span>       <span class="c1">// 进行OWN_SKIP_INTERCEPTOR搜索</span>
+<span class="p">}</span>
+<span class="p">...</span>
+<span class="p">...</span>
+<span class="n">DEF_GETTER</span><span class="p">(</span><span class="n">Name</span><span class="p">,</span> <span class="n">IsPrivate</span><span class="p">,</span> <span class="kt">bool</span><span class="p">)</span> <span class="p">{</span>
+  <span class="k">return</span> <span class="k">this</span><span class="o">-&gt;</span><span class="n">IsSymbol</span><span class="p">(</span><span class="n">cage_base</span><span class="p">)</span> <span class="o">&amp;&amp;</span> <span class="n">Symbol</span><span class="o">::</span><span class="n">cast</span><span class="p">(</span><span class="o">*</span><span class="k">this</span><span class="p">).</span><span class="n">is_private</span><span class="p">();</span> <span class="c1">// 需要name为Symbol类型，并symbol需要为private</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>所以当Lookup时传入PrivateSymbol，且lookup_start_object不是Receiver时，会导致我们得到的holder_，即属性持有者变量，可能实际上是从prototype中搜索得到的，而在语义中，由于我们进行的是OWN_SKIP_INTERCEPTOR的搜索，预期为lookup_start_object是属性持有者，返回的holder应是该对象中的属性</p>
+
+<div class="language-diff highlighter-rouge"><div class="highlight"><pre class="highlight"><code> template &lt;bool is_element&gt;
+ void LookupIterator::Start() {
+   // GetRoot might allocate if lookup_start_object_ is a string.
+<span class="gd">-  holder_ = GetRoot(isolate_, lookup_start_object_, index_);
+</span></code></pre></div></div>
+
+<h2 id="poc分析">poc分析</h2>
+
+<p>在diff结果尾部有一段测试代码</p>
+
+<div class="language-diff highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="gh">diff --git a/test/mjsunit/regress/regress-crbug-1447430.js b/test/mjsunit/regress/regress-crbug-1447430.js
+</span><span class="p">new file mode 100644
+</span><span class="gh">index 0000000000..c7bb3e72e3
+</span><span class="gd">--- /dev/null
+</span><span class="gi">+++ b/test/mjsunit/regress/regress-crbug-1447430.js
+</span><span class="p">@@ -0,0 +1,34 @@</span>
+<span class="gi">+// Copyright 2023 the V8 project authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++// Flags: --allow-natives-syntax
++
++var s = %CreatePrivateSymbol('x');
++
++(function TestSmi() {
++  function f(o, p) {
++    o[p] = 153;
++  }
++  (1).__proto__[s] = 42;
++  %PrepareFunctionForOptimization(f);
++  assertEquals(f(42, s), undefined);
++}());
++
++(function TestString() {
++  function f(o, p) {
++    o[p] = 153;
++  }
++  ('xyz').__proto__[s] = 42;
++  %PrepareFunctionForOptimization(f);
++  assertEquals(f('abc', s), undefined);
++}());
++
++(function TestSymbol() {
++  function f(o, p) {
++    o[p] = 153;
++  }
++  Symbol('xyz').__proto__[s] = 42;
++  %PrepareFunctionForOptimization(f);
++  assertEquals(f(Symbol('abc'), s), undefined);
++}());
+</span></code></pre></div></div>
+
+<p>在机器上编译11.4.183.17版本的v8，运行以下poc，成功使v8崩溃</p>
+
+<div class="language-js highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">var</span> <span class="nx">s</span> <span class="o">=</span> <span class="o">%</span><span class="nx">CreatePrivateSymbol</span><span class="p">(</span><span class="dl">'</span><span class="s1">x</span><span class="dl">'</span><span class="p">);</span>
+
+<span class="kd">function</span> <span class="nx">f</span><span class="p">(</span><span class="nx">o</span><span class="p">,</span><span class="nx">p</span><span class="p">){</span>
+    <span class="nx">o</span><span class="p">[</span><span class="nx">p</span><span class="p">]</span> <span class="o">=</span> <span class="mh">0x33</span><span class="p">;</span>
+<span class="p">}</span>
+<span class="p">(</span><span class="mi">1</span><span class="p">).</span><span class="nx">__proto__</span><span class="p">[</span><span class="nx">s</span><span class="p">]</span> <span class="o">=</span> <span class="mi">42</span><span class="p">;</span>
+<span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">f</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span><span class="nx">s</span><span class="p">));</span>
+</code></pre></div></div>
+
+<p>通过gdb调试发现崩溃点在向0x6这个地址尝试读取或写入，即3的smi表示，说明此刻f的o参数被作为了一个Tagged的变量来使用</p>
+
+<p>在编译出来的gen/torque-generated下的instance_type.h里可以找到所有instance type的定义</p>
+
+
+  </div><a class="u-url" href="/v8/2023/07/28/issue1447430.html" hidden></a>
+</article>
+
+      </div>
+    </main><footer class="site-footer h-card">
+  <data class="u-url" href="/"></data>
+
+  <div class="wrapper">
+
+    <h2 class="footer-heading">ln3&#39;s blog</h2>
+
+    <div class="footer-col-wrapper">
+      <div class="footer-col footer-col-1">
+        <ul class="contact-list">
+          <li class="p-name">ln3&#39;s blog</li><li><a class="u-email" href="mailto:1816154@gmail.com">1816154@gmail.com</a></li></ul>
+      </div>
+
+      <div class="footer-col footer-col-2"><ul class="social-media-list"><li><a href="https://github.com/golbeze"><svg class="svg-icon"><use xlink:href="/assets/minima-social-icons.svg#github"></use></svg> <span class="username">golbeze</span></a></li></ul>
+</div>
+
+      <div class="footer-col footer-col-3">
+        <p>binary noob
+</p>
+      </div>
+    </div>
+
+  </div>
+
+</footer>
+</body>
+
+</html>
